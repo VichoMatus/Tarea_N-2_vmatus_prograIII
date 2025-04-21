@@ -97,16 +97,32 @@ def obtener_ultimo_vuelo():
     return {"message": "No hay vuelos en la lista"}
 
 @app.post("/vuelos/inserta")
-def insertar_vuelo_en_posicion(vuelo_id: int, posicion: int, db: Session = Depends(get_db)):
+def insertar_vuelo_en_posicion(codigo: str, estado: EstadoVuelo, hora: str, origen: str, destino: str, posicion: int, db: Session = Depends(get_db)):
     """
-    Inserta un vuelo en una posición específica.
+    Inserta un vuelo en una posición específica (mueve los vuelos posteriores a la derecha).
     """
-    vuelo = db.query(Vuelo).filter(Vuelo.id == vuelo_id).first()
-    if vuelo is None:
-        raise HTTPException(status_code=404, detail="Vuelo no encontrado")
+    # Verificar que la posición sea válida
+    if posicion < 0 or posicion > lista_vuelos.longitud():
+        raise HTTPException(status_code=400, detail="Posición fuera de rango")
+
+    # Convertimos la hora recibida a un objeto datetime
+    try:
+        hora_obj = datetime.strptime(hora, "%H:%M")  # El formato esperado es "HH:MM"
+    except ValueError:
+        raise HTTPException(status_code=400, detail="El formato de la hora no es válido. Use el formato 'HH:MM'.")
+
+    # Crear un vuelo con los nuevos atributos
+    vuelo = Vuelo(codigo=codigo, estado=estado, hora=hora_obj, origen=origen, destino=destino)
     
+    # Insertar el vuelo en la posición indicada
     lista_vuelos.insertar_en_posicion(vuelo, posicion)
-    return {"message": "Vuelo insertado en la posición deseada"}
+
+    # Agregar el vuelo a la base de datos
+    db.add(vuelo)
+    db.commit()
+    db.refresh(vuelo)
+
+    return {"message": f"Vuelo con código {codigo} insertado en la posición {posicion}"}
 
 @app.delete("/vuelos/extrair")
 def eliminar_vuelo_en_posicion(posicion: int, db: Session = Depends(get_db)):
@@ -142,11 +158,41 @@ def obtener_lista_vuelos():
         current = current.next
     return vuelos
 
-@app.patch("/vuelos/reordenar")
-def reordenar_vuelos(db: Session = Depends(get_db)):
+@app.patch("/vuelos/actualizar/{codigo}")
+def actualizar_estado_vuelo(codigo: str, nuevo_estado: EstadoVuelo, db: Session = Depends(get_db)):
     """
-    Reordena los vuelos por algún criterio (por ejemplo, por retrasos).
+    Actualiza el estado de un vuelo y ajusta su posición en la lista.
+    Si el estado cambia a 'emergencia', el vuelo se moverá al frente.
+    Si el estado cambia a 'programado', el vuelo se moverá al final.
     """
-    vuelos = db.query(Vuelo).all()
-    vuelos_ordenados = sorted(vuelos, key=lambda x: x.estado == EstadoVuelo.emergencia, reverse=True)  # Emergencias primero
-    return {"message": "Cola reordenada", "vuelos": vuelos_ordenados}
+    # Obtener el vuelo de la base de datos
+    vuelo_db = db.query(Vuelo).filter(Vuelo.codigo == codigo).first()
+    if not vuelo_db:
+        raise HTTPException(status_code=404, detail="Vuelo no encontrado")
+    
+    # Obtener la posición actual del vuelo en la lista
+    posicion_actual = None
+    current = lista_vuelos.head
+    index = 0
+    while current:
+        if current.data.codigo == codigo:
+            posicion_actual = index
+            break
+        current = current.next
+        index += 1
+
+    if posicion_actual is None:
+        raise HTTPException(status_code=404, detail="Vuelo no encontrado en la lista")
+
+    # Actualizar el estado del vuelo en la base de datos
+    vuelo_db.estado = nuevo_estado
+    db.commit()
+    db.refresh(vuelo_db)
+
+    # Reubicar el vuelo dependiendo del nuevo estado
+    lista_vuelos.mover_a_posicion(vuelo_db, posicion_actual)
+
+    return {"message": f"Vuelo con código {codigo} actualizado a {nuevo_estado} y reposicionado en la lista."}
+
+
+
