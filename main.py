@@ -189,10 +189,11 @@ def actualizar_estado_vuelo(codigo: str, nuevo_estado: EstadoVuelo, db: Session 
     db.commit()
     db.refresh(vuelo_db)
 
-    # Reubicar el vuelo dependiendo del nuevo estado
-    lista_vuelos.mover_a_posicion(vuelo_db, posicion_actual)
+    # Reubicar el vuelo dependiendo del nuevo estado y pasar el db a mover_a_posicion
+    lista_vuelos.mover_a_posicion(vuelo_db, posicion_actual, db)
 
     return {"message": f"Vuelo con código {codigo} actualizado a {nuevo_estado} y reposicionado en la lista."}
+
 
 
 

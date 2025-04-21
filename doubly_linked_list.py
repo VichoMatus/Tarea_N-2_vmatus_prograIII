@@ -1,4 +1,5 @@
-from models import EstadoVuelo  # Importar la enumeración EstadoVuelo
+from sqlalchemy.orm import Session
+from models import Vuelo, EstadoVuelo
 
 class DoublyLinkedList:
     class Node:
@@ -108,11 +109,10 @@ class DoublyLinkedList:
 
             self.size += 1
 
-    def mover_a_posicion(self, vuelo, nueva_posicion):
+    def mover_a_posicion(self, vuelo, nueva_posicion, db: Session):
         """
-        Mueve un vuelo a una nueva posición en la lista.
-        Si el vuelo está en la lista, lo elimina de su posición actual
-        y lo inserta en la nueva posición.
+        Mueve un vuelo a una nueva posición en la lista y actualiza su estado en la base de datos.
+        Si el vuelo está en la lista, lo elimina de su posición actual y lo inserta en la nueva posición.
         """
         # Buscar el vuelo por su código en la lista
         current = self.head
@@ -131,9 +131,15 @@ class DoublyLinkedList:
         # Eliminar el vuelo de su posición actual
         self.extraer_de_posicion(posicion_actual)
 
-        # Si el vuelo es de emergencia, insertarlo al frente
+        # Actualizar el estado en la base de datos
+        vuelo.estado = vuelo.estado  # El nuevo estado ya está asignado en la llamada
+        db.commit()  # Guardar los cambios en la base de datos
+
+        # Insertar el vuelo en su nueva posición
         if vuelo.estado == EstadoVuelo.emergencia:
-            self.insertar_al_frente(vuelo)
-        # Si el vuelo es programado, insertarlo al final
+            self.insertar_al_frente(vuelo)  # Si es emergencia, insertamos al frente
         elif vuelo.estado == EstadoVuelo.programado:
-            self.insertar_al_final(vuelo)
+            self.insertar_al_final(vuelo)  # Si es programado, insertamos al final
+        elif vuelo.estado == EstadoVuelo.retrasado:
+            # Si el vuelo es retrasado, lo insertamos en el lugar correspondiente
+            self.insertar_al_final(vuelo)  # Añadir al final de los vuelos retrasados
