@@ -1,169 +1,152 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy import create_engine
-from models import Base, Vuelo, Asiento, Cliente, Reserva, EstadoVuelo
-from typing import List
+from fastapi import FastAPI, Depends, HTTPException
+from sqlalchemy.orm import Session
+from models import Vuelo, EstadoVuelo
+from database import get_db
+from doubly_linked_list import DoublyLinkedList  # Importamos la clase DoublyLinkedList
 from datetime import datetime
-
-# Configuración de la aplicación FastAPI
 app = FastAPI()
 
-# Configuración de la base de datos SQLite
-DATABASE_URL = "sqlite:///./Aeropuerto.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Instanciamos la lista doblemente enlazada
+lista_vuelos = DoublyLinkedList()
 
-# Crear las tablas
-Base.metadata.create_all(bind=engine)
+@app.on_event("startup")
+def cargar_vuelos_iniciales():
+    """
+    Carga los vuelos de la base de datos en la lista enlazada al iniciar la aplicación.
+    """
+    # Utiliza el get_db para obtener la sesión de base de datos
+    db = next(get_db())  # Esto obtiene la sesión de la base de datos
+    vuelos_db = db.query(Vuelo).all()  # Recupera todos los vuelos desde la base de datos
+    
+    for vuelo in vuelos_db:
+        # Dependiendo del estado del vuelo, inserta en la lista
+        if vuelo.estado == EstadoVuelo.emergencia:
+            lista_vuelos.insertar_al_frente(vuelo)
+        else:
+            lista_vuelos.insertar_al_final(vuelo)
+    
+    print("Vuelos cargados desde la base de datos en la lista enlazada.")
 
-# Definir el modelo de datos (sin redefinir las clases)
-class VueloBase(BaseModel):
-    codigo: str
-    estado: EstadoVuelo
-    hora: str
-    origen: str
-    destino: str
 
-class AsientoBase(BaseModel):
-    asiento_numero: str
-    vuelo_id: int
 
-class ClienteBase(BaseModel):
-    nombre: str
-    email: str
-    telefono: str
 
-class ReservaBase(BaseModel):
-    cliente_id: int
-    asiento_id: int
-    vuelo_id: int
-
-from datetime import datetime
-
-@app.post("/vuelos")
-def crear_vuelo(vuelo: VueloBase):
+@app.post("/vuelos/")
+def crear_vuelo(codigo: str, estado: EstadoVuelo, hora: str, origen: str, destino: str, db: Session = Depends(get_db)):
+    """
+    Crea un vuelo y lo agrega al final o al frente dependiendo del estado.
+    Si el estado es 'emergencia', el vuelo se agrega al frente.
+    """
+    # Verificar si ya existe un vuelo con el mismo código
+    vuelo_existente = db.query(Vuelo).filter(Vuelo.codigo == codigo).first()
+    if vuelo_existente:
+        raise HTTPException(status_code=400, detail="Ya existe un vuelo con este código.")
+    
     try:
-        # Convertir la hora del vuelo desde string a datetime
-        hora_vuelo = datetime.strptime(vuelo.hora, "%H:%M")
-        
-        db = SessionLocal()
-        vuelo_obj = Vuelo(codigo=vuelo.codigo, estado=vuelo.estado, hora=hora_vuelo, origen=vuelo.origen, destino=vuelo.destino)
-        db.add(vuelo_obj)
-        db.commit()
-        db.refresh(vuelo_obj)
-        db.close()
-        
-        # Formatear la hora al formato deseado (hora:minuto)
-        hora_formateada = vuelo_obj.hora.strftime("%H:%M")
-        
-        return {"mensaje": "Vuelo creado exitosamente", "codigo_vuelo": vuelo_obj.codigo, "hora": hora_formateada}
-    except Exception as e:
-        db.rollback()  # Deshacer los cambios si algo falla
-        db.close()
-        raise HTTPException(status_code=500, detail=f"Error al crear el vuelo: {str(e)}")
+        # Convertimos la hora recibida a un objeto datetime
+        hora_obj = datetime.strptime(hora, "%H:%M")  # El formato esperado es "HH:MM"
+    except ValueError:
+        raise HTTPException(status_code=400, detail="El formato de la hora no es válido. Use el formato 'HH:MM'.")
 
-
-@app.post("/asientos")
-def crear_asiento(asiento: AsientoBase):
-    db = SessionLocal()
-    asiento_obj = Asiento(asiento_numero=asiento.asiento_numero, vuelo_id=asiento.vuelo_id)
-    db.add(asiento_obj)
+    # Crear un vuelo con los nuevos atributos
+    vuelo = Vuelo(codigo=codigo, estado=estado, hora=hora_obj, origen=origen, destino=destino)
+    db.add(vuelo)
     db.commit()
-    db.refresh(asiento_obj)
-    db.close()
-    return {"mensaje": "Asiento creado exitosamente", "asiento_numero": asiento_obj.asiento_numero}
+    db.refresh(vuelo)
+    
+    # Si el estado es 'emergencia', insertar al frente
+    if estado == EstadoVuelo.emergencia:
+        lista_vuelos.insertar_al_frente(vuelo)
+    else:
+        lista_vuelos.insertar_al_final(vuelo)
+    
+    return vuelo
 
-@app.post("/clientes")
-def crear_cliente(cliente: ClienteBase):
-    db = SessionLocal()
-    cliente_obj = Cliente(nombre=cliente.nombre, email=cliente.email, telefono=cliente.telefono)
-    db.add(cliente_obj)
-    db.commit()
-    db.refresh(cliente_obj)
-    db.close()
-    return {"mensaje": "Cliente creado exitosamente", "nombre_cliente": cliente_obj.nombre}
-
-@app.post("/reservas")
-def crear_reserva(reserva: ReservaBase):
-    db = SessionLocal()
-    reserva_obj = Reserva(cliente_id=reserva.cliente_id, asiento_id=reserva.asiento_id, vuelo_id=reserva.vuelo_id)
-    db.add(reserva_obj)
-    db.commit()
-    db.refresh(reserva_obj)
-    db.close()
-    return {"mensaje": "Reserva realizada exitosamente", "id_reserva": reserva_obj.id}
-
-@app.get("/vuelos/total")
-def obtener_total_vuelos():
-    db = SessionLocal()
-    total_vuelos = db.query(Vuelo).count()
-    db.close()
-    return {"total_vuelos": total_vuelos}
-
-@app.get("/vuelos/proximo")
-def obtener_proximo_vuelo():
-    db = SessionLocal()
-    vuelo = db.query(Vuelo).order_by(Vuelo.hora).first()
-    db.close()
-    if vuelo:
-        return {"vuelo_codigo": vuelo.codigo, "hora": vuelo.hora}
-    raise HTTPException(status_code=404, detail="No hay vuelos programados")
-
-@app.get("/vuelos/{vuelo_id}")
-def obtener_vuelo(vuelo_id: int):
-    db = SessionLocal()
-    vuelo = db.query(Vuelo).filter(Vuelo.id == vuelo_id).first()
-    db.close()
-    if vuelo:
-        return {"vuelo_codigo": vuelo.codigo, "origen": vuelo.origen, "destino": vuelo.destino, "estado": vuelo.estado, "hora": vuelo.hora}
-    raise HTTPException(status_code=404, detail="Vuelo no encontrado")
-
-@app.get("/clientes/{cliente_id}")
-def obtener_cliente(cliente_id: int):
-    db = SessionLocal()
-    cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
-    db.close()
-    if cliente:
-        return {"nombre": cliente.nombre, "email": cliente.email, "telefono": cliente.telefono}
-    raise HTTPException(status_code=404, detail="Cliente no encontrado")
-
-@app.get("/reservas/{reserva_id}")
-def obtener_reserva(reserva_id: int):
-    db = SessionLocal()
-    reserva = db.query(Reserva).filter(Reserva.id == reserva_id).first()
-    db.close()
-    if reserva:
-        return {"id_reserva": reserva.id, "cliente_id": reserva.cliente_id, "asiento_id": reserva.asiento_id, "vuelo_id": reserva.vuelo_id}
-    raise HTTPException(status_code=404, detail="Reserva no encontrada")
 
 @app.get("/vuelos/lista")
 def obtener_lista_vuelos():
-    db = SessionLocal()
-    vuelos = db.query(Vuelo).all()
-    db.close()
-    return {"vuelos": [vuelo.codigo for vuelo in vuelos]}
+    """
+    Lista todos los vuelos en orden actual desde la lista enlazada.
+    """
+    vuelos = []
+    current = lista_vuelos.head
+    while current:
+        vuelos.append(current.data)
+        current = current.next
+    return vuelos
 
 
-@app.delete("/vuelos/{posicion}")
-def eliminar_vuelo(posicion: int):
-    db = SessionLocal()
-    vuelo = db.query(Vuelo).filter(Vuelo.id == posicion).first()
-    if not vuelo:
-        db.close()
+
+@app.get("/vuelos/proximo")
+def obtener_proximo_vuelo():
+    """
+    Retorna el primer vuelo sin remover.
+    """
+    vuelo = lista_vuelos.obtener_primero()
+    if vuelo:
+        return vuelo
+    return {"message": "No hay vuelos en la lista"}
+
+@app.get("/vuelos/ultimo")
+def obtener_ultimo_vuelo():
+    """
+    Retorna el último vuelo sin remover.
+    """
+    vuelo = lista_vuelos.obtener_ultimo()
+    if vuelo:
+        return vuelo
+    return {"message": "No hay vuelos en la lista"}
+
+@app.post("/vuelos/inserta")
+def insertar_vuelo_en_posicion(vuelo_id: int, posicion: int, db: Session = Depends(get_db)):
+    """
+    Inserta un vuelo en una posición específica.
+    """
+    vuelo = db.query(Vuelo).filter(Vuelo.id == vuelo_id).first()
+    if vuelo is None:
         raise HTTPException(status_code=404, detail="Vuelo no encontrado")
-    db.delete(vuelo)
-    db.commit()
-    db.close()
-    return {"mensaje": f"Vuelo {vuelo.codigo} eliminado exitosamente"}
+    
+    lista_vuelos.insertar_en_posicion(vuelo, posicion)
+    return {"message": "Vuelo insertado en la posición deseada"}
+
+@app.delete("/vuelos/extrair")
+def eliminar_vuelo_en_posicion(posicion: int, db: Session = Depends(get_db)):
+    """
+    Remueve un vuelo en la posición dada en la lista doblemente enlazada y lo elimina de la base de datos.
+    """
+    if posicion < 0 or posicion >= lista_vuelos.longitud():
+        raise HTTPException(status_code=400, detail="Posición inválida o fuera de rango")
+
+    # Extraer el vuelo de la lista (por posición)
+    vuelo = lista_vuelos.extraer_de_posicion(posicion)
+
+    # Eliminar el vuelo de la base de datos
+    vuelo_db = db.query(Vuelo).filter(Vuelo.codigo == vuelo.codigo).first()
+    if vuelo_db:
+        db.delete(vuelo_db)
+        db.commit()
+
+    return {"message": f"Vuelo con código {vuelo.codigo} eliminado de la posición {posicion}"}
+
+
+
+
+@app.get("/vuelos/lista")
+def obtener_lista_vuelos():
+    """
+    Lista todos los vuelos en orden actual.
+    """
+    vuelos = []
+    current = lista_vuelos.head
+    while current:
+        vuelos.append(current.data)
+        current = current.next
+    return vuelos
 
 @app.patch("/vuelos/reordenar")
-def reordenar_vuelos():
-    db = SessionLocal()
-    vuelos_reordenados = db.query(Vuelo).filter(Vuelo.estado == EstadoVuelo.RETRASADO).all()
-    # Asumiendo que se desea mover los vuelos retrasados al final de la lista
-    for vuelo in vuelos_reordenados:
-        vuelo.estado = EstadoVuelo.PROGRAMADO  # Cambiar estado a programado para moverlos al final
-        db.commit()
-    db.close()
-    return {"mensaje": "Vuelos reordenados exitosamente"}
+def reordenar_vuelos(db: Session = Depends(get_db)):
+    """
+    Reordena los vuelos por algún criterio (por ejemplo, por retrasos).
+    """
+    vuelos = db.query(Vuelo).all()
+    vuelos_ordenados = sorted(vuelos, key=lambda x: x.estado == EstadoVuelo.emergencia, reverse=True)  # Emergencias primero
+    return {"message": "Cola reordenada", "vuelos": vuelos_ordenados}
